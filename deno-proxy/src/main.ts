@@ -250,6 +250,10 @@ async function handleTokenCount(req: Request, requestId: string) {
 serve((req) => {
   const url = new URL(req.url);
 
+  if (req.method === "GET" && url.pathname === "/") {
+    return new Response("OK", { status: 200 });
+  }
+
   if (req.method === "GET" && url.pathname === "/healthz") {
     return jsonResponse({ status: "ok" });
   }
