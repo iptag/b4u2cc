@@ -179,9 +179,26 @@ async function handleMessages(req: Request, requestId: string) {
             }
             if (upstreamClosed) break;
           }
-          parser.finish();
-          await claudeStream.handleEvents(parser.consumeEvents());
-          await logRequest(requestId, "info", "Completed streaming response", {});
+
+          // 检测上游是否正常关闭（收到 [DONE]）
+          // 如果没有收到 [DONE] 就结束了，说明是异常中断
+          if (!upstreamClosed) {
+            await logRequest(requestId, "warn", "Upstream closed without [DONE] signal", {
+              remainingBuffer: sseBuffer.slice(0, 200),
+            });
+            // 仍然尝试处理已解析的内容
+            parser.finish();
+            await claudeStream.handleEvents(parser.consumeEvents());
+            // 发送错误事件而非正常完成
+            await claudeStream.emitError("Upstream connection closed unexpectedly");
+          } else {
+            parser.finish();
+            await claudeStream.handleEvents(parser.consumeEvents());
+          }
+
+          await logRequest(requestId, "info", "Completed streaming response", {
+            normalClose: upstreamClosed,
+          });
           await closeRequestLog(requestId);
         } catch (error) {
           await logRequest(requestId, "error", "Streaming failure", { error: String(error) });

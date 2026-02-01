@@ -193,45 +193,49 @@ export class ToolifyParser {
 
     const parsed = parseInvokeXml(invokeXml);
     if (parsed) {
-      log("debug", "Successfully parsed first invoke call", {
+      log("debug", "Successfully parsed invoke call", {
         toolName: parsed.name,
         argumentKeys: Object.keys(parsed.arguments),
       });
       this.events.push({ type: "tool_call", call: parsed });
-      
-      // 过滤掉第一个工具调用后面的所有 <invoke>...</invoke> 标签
-      // 但保留非工具调用的文本内容
+
+      // 解析后续的 <invoke> 标签，全部作为 tool_call 事件发出
       let remaining = afterInvoke;
-      let filteredContent = "";
-      
+
       while (true) {
         const trimmed = remaining.trimStart();
         if (!trimmed) break;
-        
+
         // 检查是否是另一个 <invoke> 标签
         if (trimmed.toLowerCase().startsWith("<invoke")) {
           const nextEndIdx = trimmed.indexOf("</invoke>");
           if (nextEndIdx !== -1) {
-            // 找到完整的 <invoke>...</invoke>，跳过它
-            const skippedTag = trimmed.slice(0, nextEndIdx + "</invoke>".length);
-            log("debug", "Filtering out subsequent tool call", {
-              skippedTagPreview: skippedTag.slice(0, 200),
-            });
+            const nextInvokeXml = trimmed.slice(0, nextEndIdx + "</invoke>".length);
+            const nextParsed = parseInvokeXml(nextInvokeXml);
+            if (nextParsed) {
+              log("debug", "Parsed subsequent invoke call", {
+                toolName: nextParsed.name,
+                argumentKeys: Object.keys(nextParsed.arguments),
+              });
+              this.events.push({ type: "tool_call", call: nextParsed });
+            } else {
+              log("warn", "Failed to parse subsequent invoke XML", {
+                invokeXml: nextInvokeXml.slice(0, 200),
+              });
+            }
             remaining = trimmed.slice(nextEndIdx + "</invoke>".length);
             continue;
           }
         }
-        
+
         // 不是工具调用，保留这部分内容
-        filteredContent = remaining;
+        if (trimmed) {
+          log("debug", "Emitting remaining non-tool-call content as text", {
+            contentPreview: trimmed.slice(0, 200),
+          });
+          this.events.push({ type: "text", content: remaining });
+        }
         break;
-      }
-      
-      if (filteredContent.trim()) {
-        log("debug", "Emitting remaining non-tool-call content as text", {
-          contentPreview: filteredContent.slice(0, 200),
-        });
-        this.events.push({ type: "text", content: filteredContent });
       }
     } else {
       log("warn", "Failed to parse invoke XML", {

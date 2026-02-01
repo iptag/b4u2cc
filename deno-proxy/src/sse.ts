@@ -14,7 +14,11 @@ export class SSEWriter {
   ) {}
   private closed = false;
 
-  async send(event: SSEEvent, critical = false) {
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  async send(event: SSEEvent, critical = false): Promise<boolean> {
     if (this.closed) {
       await logRequest(this.requestId, "warn", "Attempted to send on closed SSE stream", {
         event: event.event,
@@ -27,22 +31,33 @@ export class SSEWriter {
       dataPreview: JSON.stringify(event.data).slice(0, 20480),
     });
     const payload = `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`;
-    
-    // 检查背压：等待写入队列准备就绪
-    const maxRetries = critical ? 3 : 1;
+
+    // 关键事件（如 message_start, content_block_start/stop, message_delta, message_stop）有更多重试
+    // 非关键事件（如 content_block_delta 文本增量）重试次数较少但也不能为 0
+    const maxRetries = critical ? 5 : 3;
+    const maxBackpressureWaits = 10;  // 背压等待上限，避免无限等待
+    let backpressureWaits = 0;
+
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
-        // 检查 desiredSize，如果为负表示队列已满
-        if (this.controller.desiredSize !== null && this.controller.desiredSize <= 0) {
-          // 短暂等待队列排空
+        // 检查背压：如果队列满，等待后重试（不消耗 retry 计数）
+        while (this.controller.desiredSize !== null && this.controller.desiredSize <= 0) {
+          if (backpressureWaits >= maxBackpressureWaits) {
+            await logRequest(this.requestId, "warn", "Max backpressure waits exceeded", {
+              event: event.event,
+              waits: backpressureWaits,
+            });
+            break;  // 超出背压等待上限，尝试强制 enqueue
+          }
+          backpressureWaits++;
           await new Promise(resolve => setTimeout(resolve, 10));
-          continue;
         }
-        
+
         this.controller.enqueue(encoder.encode(payload));
         return true;
       } catch (error) {
-        if (retry === maxRetries - 1) {
+        const isLastRetry = retry === maxRetries - 1;
+        if (isLastRetry) {
           this.closed = true;
           await logRequest(
             this.requestId,
@@ -52,6 +67,7 @@ export class SSEWriter {
               error: error instanceof Error ? error.message : String(error),
               event: event.event,
               retries: retry + 1,
+              critical,
             },
           );
           return false;
@@ -59,8 +75,9 @@ export class SSEWriter {
         await logRequest(this.requestId, "warn", "SSE enqueue failed, retrying", {
           error: error instanceof Error ? error.message : String(error),
           retry: retry + 1,
+          maxRetries,
         });
-        await new Promise(resolve => setTimeout(resolve, 5));
+        await new Promise(resolve => setTimeout(resolve, 5 * (retry + 1)));  // 递增退避
       }
     }
     return false;

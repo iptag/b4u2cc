@@ -23,6 +23,7 @@ interface StreamContext {
   thinkingBlockOpen: boolean;
   finished: boolean;
   totalOutputTokens: number;
+  hasToolCall: boolean;  // 跟踪是否发出过 tool_call，用于决定 stop_reason
 }
 
 export class ClaudeStream {
@@ -39,6 +40,7 @@ export class ClaudeStream {
       thinkingBlockOpen: false,
       finished: false,
       totalOutputTokens: 0,
+      hasToolCall: false,
     };
     // 对 tokenMultiplier 做防御性处理，避免后续出现 NaN/Infinity
     this.tokenMultiplier = Number.isFinite(config.tokenMultiplier) && config.tokenMultiplier > 0
@@ -183,6 +185,7 @@ export class ClaudeStream {
 
   private async emitToolCall(call: ParsedInvokeCall) {
     await this.endTextBlock();
+    this.context.hasToolCall = true;
     const index = this.context.nextBlockIndex++;
     const toolId = generateToolId();
     await this.writer.send({
@@ -231,12 +234,16 @@ export class ClaudeStream {
       ),
     );
     
+    // 根据是否发出过 tool_call 决定 stop_reason
+    // 官方协议：有 tool_use 块时必须为 "tool_use"，否则为 "end_turn"
+    const stopReason = this.context.hasToolCall ? "tool_use" : "end_turn";
+
     await this.writer.send({
       event: "message_delta",
       data: {
         type: "message_delta",
         delta: {
-          stop_reason: "end_turn",
+          stop_reason: stopReason,
           stop_sequence: null,
         },
         usage: {
@@ -248,6 +255,28 @@ export class ClaudeStream {
     await this.writer.send({
       event: "message_stop",
       data: { type: "message_stop" },
+    }, true);
+  }
+
+  /**
+   * 当上游异常中断时发送错误事件，避免伪装成正常完成
+   */
+  async emitError(message: string) {
+    if (this.context.finished) return;
+    this.context.finished = true;
+    await this.context.aggregator.flushAsync();
+    await this.endTextBlock();
+    await this.endThinkingBlock();
+
+    await this.writer.send({
+      event: "error",
+      data: {
+        type: "error",
+        error: {
+          type: "stream_error",
+          message,
+        },
+      },
     }, true);
   }
 }
