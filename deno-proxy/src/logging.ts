@@ -11,7 +11,8 @@ const levelOrder: Record<LogLevel, number> = {
 
 // 检查是否禁用日志
 const LOGGING_DISABLED = Deno.env.get("LOGGING_DISABLED") === "true" || Deno.env.get("LOGGING_DISABLED") === "1";
-const configuredLevel = (Deno.env.get("LOG_LEVEL")?.toLowerCase() as LogLevel) ?? "info";
+// 默认 debug 级别以便调试，生产环境可设置 LOG_LEVEL=info
+const configuredLevel = (Deno.env.get("LOG_LEVEL")?.toLowerCase() as LogLevel) ?? "debug";
 
 // Request-specific log files
 const requestLogFiles = new Map<string, Deno.FsFile>();

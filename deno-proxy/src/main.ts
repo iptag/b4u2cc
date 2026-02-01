@@ -57,6 +57,23 @@ function validateClientKey(req: Request, config: ProxyConfig): boolean {
 }
 
 async function handleMessages(req: Request, requestId: string) {
+  // 记录完整的请求 URL 和 headers
+  const url = new URL(req.url);
+  const headers: Record<string, string> = {};
+  req.headers.forEach((value, key) => {
+    // 隐藏敏感信息
+    if (key.toLowerCase() === "authorization" || key.toLowerCase() === "x-api-key") {
+      headers[key] = value.slice(0, 10) + "...";
+    } else {
+      headers[key] = value;
+    }
+  });
+  await logRequest(requestId, "info", "Incoming request", {
+    method: req.method,
+    url: url.pathname + url.search,
+    headers,
+  });
+
   if (!validateClientKey(req, config)) {
     return unauthorized();
   }
@@ -147,6 +164,7 @@ async function handleMessages(req: Request, requestId: string) {
               if (!dataLines.length) continue;
               const payload = dataLines.join("\n");
               if (payload === "[DONE]") {
+                await logRequest(requestId, "info", "Received upstream [DONE] signal");
                 upstreamClosed = true;
                 break;
               }
